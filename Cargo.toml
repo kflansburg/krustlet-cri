@@ -1,0 +1,21 @@
+[package]
+name = "krustlet-cri"
+version = "0.1.0"
+authors = ["kflansburg <kevin.flansburg@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+kubelet = { version = "*", path = "../krustlet/crates/kubelet", features = ['cli'] }
+tokio = { version = "0.2", features = ["macros"] }
+kube = "0.33"
+env_logger = "0.7"
+anyhow = "*"
+async-trait = "0.1"
+log = "0.4"
+tonic = { version = "*", features = ["tls"] }
+prost = "*"
+
+[build-dependencies]
+tonic-build = { version = "*", features = ["prost"] }
