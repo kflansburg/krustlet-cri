@@ -1,32 +1,100 @@
+use anyhow::bail;
 use async_trait::async_trait;
+use chrono::Utc;
 use k8s_cri::v1alpha2 as cri;
-use log::{trace, debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use std::convert::TryFrom;
 use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
-use chrono::{Utc};
 
 type Namespace = String;
-type Name = String;
-type PodId = String;
+type Pod = String;
+type Container = String;
+type Id = String;
 
 pub struct Provider {
     socket_address: &'static str,
     kubeconfig: kube::Config,
-    pods: tokio::sync::RwLock<std::collections::HashMap<(Namespace, Name), PodId>>
+    pods: tokio::sync::RwLock<std::collections::HashMap<(Namespace, Pod), cri::PodSandbox>>,
+    containers: tokio::sync::RwLock<std::collections::HashMap<(Id, Container), cri::Container>>,
 }
 
 impl Provider {
     pub fn new_from_socket_address(socket_address: &'static str, kubeconfig: kube::Config) -> Self {
-        Provider { socket_address, kubeconfig, pods: tokio::sync::RwLock::new(std::collections::HashMap::new()) }
+        Provider {
+            socket_address,
+            kubeconfig,
+            pods: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            containers: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+        }
     }
 
-    async fn load_pods(&self) -> anyhow::Result<()> {
-        debug!("Loading running pods.");
-        let request = tonic::Request::new(cri::ListPodSandboxRequest {
-            filter: None,
-        });
+    async fn pod_id(&self, namespace: &str, pod: &str) -> anyhow::Result<Id> {
+        let key = (namespace.to_string(), pod.to_string());
+        let has_pod = self.pods.read().await.contains_key(&key);
+        if has_pod {
+            Ok(self.pods.read().await.get(&key).unwrap().id.to_string())
+        } else {
+            self.get_pods().await?;
+            let has_pod = self.pods.read().await.contains_key(&key);
+            if has_pod {
+                Ok(self.pods.read().await.get(&key).unwrap().id.to_string())
+            } else {
+                error!("Could not find namespace {} pod {}.", namespace, pod);
+                bail!(kubelet::provider::ProviderError::PodNotFound {
+                    pod_name: pod.to_string(),
+                });
+            }
+        }
+    }
+
+    async fn container_id(
+        &self,
+        namespace: &str,
+        pod: &str,
+        container: &str,
+    ) -> anyhow::Result<Id> {
+        let pod_id = self.pod_id(namespace, pod).await?;
+        let key = (pod_id, container.to_string());
+        let has_container = self.containers.read().await.contains_key(&key);
+        if has_container {
+            Ok(self
+                .containers
+                .read()
+                .await
+                .get(&key)
+                .unwrap()
+                .id
+                .to_string())
+        } else {
+            self.get_containers().await?;
+            let has_container = self.containers.read().await.contains_key(&key);
+            if has_container {
+                Ok(self
+                    .containers
+                    .read()
+                    .await
+                    .get(&key)
+                    .unwrap()
+                    .id
+                    .to_string())
+            } else {
+                error!(
+                    "Could not find namespace {} pod {} container {}.",
+                    namespace, pod, container
+                );
+                bail!(kubelet::provider::ProviderError::ContainerNotFound {
+                    pod_name: pod.to_string(),
+                    container_name: container.to_string(),
+                });
+            }
+        }
+    }
+
+    async fn get_pods(&self) -> anyhow::Result<()> {
+        debug!("Loading pods.");
+        let request = tonic::Request::new(cri::ListPodSandboxRequest { filter: None });
         debug!("Sending request: {:?}", &request);
         let mut client = match self.client().await {
             Ok(client) => client,
@@ -42,18 +110,83 @@ impl Provider {
                 anyhow::bail!(e);
             }
         };
-        
+
         debug!("{:?}", &response);
-        info!("Found {} pods.", response.len());
+        info!("Found {} pods.", response.items.len());
 
         let mut pods = self.pods.write().await;
         *pods = std::collections::HashMap::new();
         for pod in response.items {
-            if let Some(meta) = pod.metadata {
-                pods.insert((meta.namespace, meta.name), pod.id);
+            if let Some(meta) = pod.metadata.clone() {
+                pods.insert((meta.namespace, meta.name), pod);
             }
         }
         Ok(())
+    }
+
+    async fn get_containers(&self) -> anyhow::Result<()> {
+        debug!("Loading containers.");
+        let request = tonic::Request::new(cri::ListContainersRequest { filter: None });
+        debug!("Sending request: {:?}", &request);
+        let mut client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => {
+                error!("Error creating client: {:?}", &e);
+                anyhow::bail!(e);
+            }
+        };
+        let response = match client.list_containers(request).await {
+            Ok(response) => response.into_inner(),
+            Err(e) => {
+                error!("Error making request: {:?}", &e);
+                anyhow::bail!(e);
+            }
+        };
+
+        debug!("{:?}", &response);
+        info!("Found {} containerss.", response.containers.len());
+
+        let mut containers = self.containers.write().await;
+        *containers = std::collections::HashMap::new();
+        for container in response.containers {
+            if let Some(meta) = container.metadata.clone() {
+                containers.insert((container.pod_sandbox_id.clone(), meta.name), container);
+            }
+        }
+        Ok(())
+    }
+
+    async fn describe_container(&self, container_id: Id) -> anyhow::Result<cri::ContainerStatus> {
+        debug!("Describing container {}.", &container_id);
+        let request = tonic::Request::new(cri::ContainerStatusRequest {
+            container_id,
+            verbose: false,
+        });
+        debug!("Sending request: {:?}", &request);
+        let mut client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => {
+                error!("Error creating client: {:?}", &e);
+                anyhow::bail!(e);
+            }
+        };
+        let response = match client.container_status(request).await {
+            Ok(response) => response.into_inner(),
+            Err(e) => {
+                error!("Error making request: {:?}", &e);
+                anyhow::bail!(e);
+            }
+        };
+        debug!("{:?}", &response);
+
+        if let Some(status) = response.status {
+            Ok(status)
+        } else {
+            bail!(
+                "Container status response contained no status: {:?}",
+                &response
+            );
+        }
     }
 
     async fn client(
@@ -79,7 +212,6 @@ impl Provider {
         let client = cri::image_service_client::ImageServiceClient::new(channel);
         Ok(client)
     }
-
 }
 
 const AMD64: &'static str = "amd64";
@@ -89,7 +221,11 @@ impl kubelet::Provider for Provider {
     const ARCH: &'static str = AMD64;
 
     async fn add(&self, pod: kubelet::Pod) -> anyhow::Result<()> {
-        info!("ADD called for namespace {} pod {}", pod.namespace(), pod.name());
+        info!(
+            "ADD called for namespace {} pod {}",
+            pod.namespace(),
+            pod.name()
+        );
 
         debug!("Starting pod sandbox {}", pod.name());
         let metadata = Some(cri::PodSandboxMetadata {
@@ -162,7 +298,7 @@ impl kubelet::Provider for Provider {
 
         let mut status = kubelet::status::Status {
             message: None,
-            container_statuses: std::collections::HashMap::new()
+            container_statuses: std::collections::HashMap::new(),
         };
         let mut image_client = match self.image_client().await {
             Ok(client) => client,
@@ -177,10 +313,12 @@ impl kubelet::Provider for Provider {
             let image = container.image.as_ref().unwrap().to_string();
             debug!("Pulling image: {}", &image);
             let request = tonic::Request::new(cri::PullImageRequest {
-                image: Some(cri::ImageSpec { image: image.clone() }),
+                image: Some(cri::ImageSpec {
+                    image: image.clone(),
+                }),
                 // TODO support registry auth
                 auth: None,
-                sandbox_config: Some(sandbox_config.clone())
+                sandbox_config: Some(sandbox_config.clone()),
             });
             debug!("Sending request: {:?}", &request);
             let response = match image_client.pull_image(request).await {
@@ -194,14 +332,22 @@ impl kubelet::Provider for Provider {
 
             debug!("Creating container: {}", &container.name);
 
-            tokio::fs::create_dir_all(format!("/var/log/pods/{}/{}/{}", pod.namespace(), pod.name(), &container.name)).await?;
+            tokio::fs::create_dir_all(format!(
+                "/var/log/pods/{}/{}/{}",
+                pod.namespace(),
+                pod.name(),
+                &container.name
+            ))
+            .await?;
 
             let metadata = Some(cri::ContainerMetadata {
                 name: container.name.clone(),
-                attempt: 0
+                attempt: 0,
             });
 
-            let image = Some(cri::ImageSpec { image: image.clone() });
+            let image = Some(cri::ImageSpec {
+                image: image.clone(),
+            });
 
             let command = container.command.clone().unwrap_or(vec![]);
 
@@ -220,7 +366,7 @@ impl kubelet::Provider for Provider {
 
             // TODO
             let labels = std::collections::HashMap::new();
-    
+
             // TODO
             let annotations = std::collections::HashMap::new();
 
@@ -244,13 +390,13 @@ impl kubelet::Provider for Provider {
                 stdin_once: false,
                 tty: false,
                 linux,
-                windows: None
+                windows: None,
             });
 
             let request = tonic::Request::new(cri::CreateContainerRequest {
                 pod_sandbox_id: pod_sandbox_id.clone(),
                 config,
-                sandbox_config: Some(sandbox_config.clone())
+                sandbox_config: Some(sandbox_config.clone()),
             });
             debug!("Sending request: {:?}", &request);
             let response = match client.create_container(request).await {
@@ -264,9 +410,7 @@ impl kubelet::Provider for Provider {
             let container_id = response.container_id;
 
             debug!("Starting container: {}", &container.name);
-            let request = tonic::Request::new(cri::StartContainerRequest {
-                container_id
-            });
+            let request = tonic::Request::new(cri::StartContainerRequest { container_id });
             debug!("Sending request: {:?}", &request);
             let response = match client.start_container(request).await {
                 Ok(response) => response.into_inner(),
@@ -276,7 +420,12 @@ impl kubelet::Provider for Provider {
                 }
             };
             info!("Started container {}: {:?}", &container.name, &response);
-            status.container_statuses.insert(container.name.clone(), kubelet::status::ContainerStatus::Running { timestamp: Utc::now() } );
+            status.container_statuses.insert(
+                container.name.clone(),
+                kubelet::status::ContainerStatus::Running {
+                    timestamp: Utc::now(),
+                },
+            );
         }
 
         let client = kube::Client::new(self.kubeconfig.clone());
@@ -295,10 +444,15 @@ impl kubelet::Provider for Provider {
         trace!("Modified pod spec: {:#?}", pod.as_kube_pod());
         if let Some(timestamp) = pod.deletion_timestamp() {
             info!("Detected deletion: {}.", timestamp);
-            self.load_pods().await?;
+            self.get_pods().await?;
 
-            match self.pods.read().await.get(&(pod.namespace().to_string(), pod.name().to_string())) {
-                Some(id) => {
+            match self
+                .pods
+                .read()
+                .await
+                .get(&(pod.namespace().to_string(), pod.name().to_string()))
+            {
+                Some(pod_sandbox) => {
                     debug!("Stopping pod sandbox {}", pod.name());
                     let mut client = match self.client().await {
                         Ok(client) => client,
@@ -308,7 +462,7 @@ impl kubelet::Provider for Provider {
                         }
                     };
                     let request = tonic::Request::new(cri::StopPodSandboxRequest {
-                        pod_sandbox_id: id.clone(),
+                        pod_sandbox_id: pod_sandbox.id.clone(),
                     });
                     debug!("Sending request: {:?}", &request);
                     let response = match client.stop_pod_sandbox(request).await {
@@ -322,7 +476,7 @@ impl kubelet::Provider for Provider {
 
                     debug!("Removing pod sandbox {}", pod.name());
                     let request = tonic::Request::new(cri::RemovePodSandboxRequest {
-                        pod_sandbox_id: id.clone(),
+                        pod_sandbox_id: pod_sandbox.id.clone(),
                     });
                     debug!("Sending request: {:?}", &request);
                     let response = match client.remove_pod_sandbox(request).await {
@@ -339,15 +493,16 @@ impl kubelet::Provider for Provider {
                         grace_period_seconds: Some(0),
                         ..Default::default()
                     };
-                    let pod_client: kube::Api<k8s_openapi::api::core::v1::Pod> = kube::Api::namespaced(
-                        kube::client::Client::new(self.kubeconfig.clone()),
-                        pod.namespace(),
-                    );
+                    let pod_client: kube::Api<k8s_openapi::api::core::v1::Pod> =
+                        kube::Api::namespaced(
+                            kube::client::Client::new(self.kubeconfig.clone()),
+                            pod.namespace(),
+                        );
                     match pod_client.delete(pod.name(), &dp).await {
                         Ok(_) => Ok(()),
                         Err(e) => Err(e.into()),
                     }
-                },
+                }
                 None => {
                     warn!("Unkown pod.");
                     Ok(())
@@ -359,8 +514,15 @@ impl kubelet::Provider for Provider {
     }
 
     async fn delete(&self, pod: kubelet::Pod) -> anyhow::Result<()> {
-        info!("DELETE called for namespace {} pod {}", pod.namespace(), pod.name());
-        self.pods.write().await.remove(&(pod.namespace().to_string(), pod.name().to_string()));
+        info!(
+            "DELETE called for namespace {} pod {}",
+            pod.namespace(),
+            pod.name()
+        );
+        self.pods
+            .write()
+            .await
+            .remove(&(pod.namespace().to_string(), pod.name().to_string()));
         Ok(())
     }
 
@@ -369,17 +531,27 @@ impl kubelet::Provider for Provider {
         namespace: String,
         pod: String,
         container: String,
-        _sender: kubelet::LogSender,
+        sender: kubelet::LogSender,
     ) -> anyhow::Result<()> {
         info!(
             "LOGS called for namespace {} pod {} container {}.",
             &namespace, &pod, &container
         );
+
+        let container_id = self.container_id(&namespace, &pod, &container).await?;
+        let status = self.describe_container(container_id).await?;
+        let handle = tokio::fs::File::open(status.log_path).await?;
+        tokio::spawn(kubelet::stream_logs(handle, sender));
         Ok(())
     }
 
     async fn exec(&self, pod: kubelet::Pod, command: String) -> anyhow::Result<Vec<String>> {
-        info!("EXEC called for namespace {} pod {}: {} ", pod.namespace(), pod.name(), &command);
+        info!(
+            "EXEC called for namespace {} pod {}: {} ",
+            pod.namespace(),
+            pod.name(),
+            &command
+        );
         Err(kubelet::provider::NotImplementedError.into())
     }
 }

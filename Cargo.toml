@@ -5,7 +5,7 @@ authors = ["kflansburg <kevin.flansburg@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-kubelet = { version = "*", git="https://github.com/deislabs/krustlet.git", features = ['cli'] }
+kubelet = { version = "*", git = "https://github.com/kflansburg/krustlet.git", features = ['cli'] }
 tokio = { version = "0.2", features = ["macros", "net"] }
 kube = "0.33"
 env_logger = "0.7"
