@@ -30,6 +30,57 @@ impl Provider {
         }
     }
 
+    async fn stop_and_delete_pod_sandbox(&self, pod: kubelet::Pod) -> anyhow::Result<()> {
+        match self
+            .pods
+            .read()
+            .await
+            .get(&(pod.namespace().to_string(), pod.name().to_string()))
+        {
+            Some(pod_sandbox) => {
+                debug!("Stopping pod sandbox {}", pod.name());
+                let mut client = match self.client().await {
+                    Ok(client) => client,
+                    Err(e) => {
+                        error!("Error creating client: {:?}", &e);
+                        anyhow::bail!(e);
+                    }
+                };
+                let request = tonic::Request::new(cri::StopPodSandboxRequest {
+                    pod_sandbox_id: pod_sandbox.id.clone(),
+                });
+                debug!("Sending request: {:?}", &request);
+                let response = match client.stop_pod_sandbox(request).await {
+                    Ok(response) => response,
+                    Err(e) => {
+                        error!("Error making request: {:?}", &e);
+                        anyhow::bail!(e);
+                    }
+                };
+                info!("Stopped pod sandbox {}: {:?}", pod.name(), response);
+
+                debug!("Removing pod sandbox {}", pod.name());
+                let request = tonic::Request::new(cri::RemovePodSandboxRequest {
+                    pod_sandbox_id: pod_sandbox.id.clone(),
+                });
+                debug!("Sending request: {:?}", &request);
+                let response = match client.remove_pod_sandbox(request).await {
+                    Ok(response) => response,
+                    Err(e) => {
+                        error!("Error making request: {:?}", &e);
+                        anyhow::bail!(e);
+                    }
+                };
+                info!("Removed pod sandbox {}: {:?}", pod.name(), response);
+                Ok(())
+            }
+            None => {
+                warn!("Unkown pod.");
+                Ok(())
+            }
+        }
+    }
+
     async fn pod_id(&self, namespace: &str, pod: &str) -> anyhow::Result<Id> {
         let key = (namespace.to_string(), pod.to_string());
         let has_pod = self.pods.read().await.contains_key(&key);
@@ -220,12 +271,55 @@ const AMD64: &'static str = "amd64";
 impl kubelet::Provider for Provider {
     const ARCH: &'static str = AMD64;
 
+    async fn node(&self, builder: &mut kubelet::NodeBuilder) -> anyhow::Result<()> {
+        let request = tonic::Request::new(cri::VersionRequest {
+            version: "v1alpha2".to_string(),
+        });
+        debug!("Sending request: {:?}", &request);
+        let mut client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => {
+                error!("Error creating client: {:?}", &e);
+                anyhow::bail!(e);
+            }
+        };
+        let response = match client.version(request).await {
+            Ok(response) => response.into_inner(),
+            Err(e) => {
+                error!("Error making request: {:?}", &e);
+                anyhow::bail!(e);
+            }
+        };
+        info!("Found container runtime: {:?}", &response);
+
+        builder.set_container_runtime_version(&format!(
+            "{}://{}",
+            &response.runtime_name, &response.runtime_version
+        ));
+        builder.add_annotation(
+            "kubeadm.alpha.kubernetes.io/cri-socket",
+            self.socket_address,
+        );
+        builder.set_architecture("amd64");
+        Ok(())
+    }
+
     async fn add(&self, pod: kubelet::Pod) -> anyhow::Result<()> {
         info!(
             "ADD called for namespace {} pod {}",
             pod.namespace(),
             pod.name()
         );
+
+        self.get_pods().await?;
+
+        let pod_exists = {
+            self.pods.read().await.contains_key(&(pod.namespace().to_string(), pod.name().to_string()))
+        };
+
+        if pod_exists {
+            self.stop_and_delete_pod_sandbox(pod.clone()).await?;
+        }
 
         debug!("Starting pod sandbox {}", pod.name());
         let metadata = Some(cri::PodSandboxMetadata {
@@ -289,8 +383,19 @@ impl kubelet::Provider for Provider {
         let response = match client.run_pod_sandbox(request).await {
             Ok(response) => response.into_inner(),
             Err(e) => {
-                error!("Error making request: {:?}", &e);
-                anyhow::bail!(e);
+                warn!("Error creating sandbox: {:?}. Remove existing sandbox and retry.", e);
+                self.stop_and_delete_pod_sandbox(pod.clone()).await?;
+                let request = tonic::Request::new(cri::RunPodSandboxRequest {
+                    config: Some(sandbox_config.clone()),
+                    runtime_handler: "".to_string(),
+                });
+                match client.run_pod_sandbox(request).await {
+                    Ok(response) => response.into_inner(),
+                    Err(e) => {
+                        error!("Error making request: {:?}", &e);
+                        anyhow::bail!(e);
+                    }
+                }
             }
         };
         info!("Started pod sandbox {}: {:?}", pod.name(), &response);
@@ -445,68 +550,18 @@ impl kubelet::Provider for Provider {
         if let Some(timestamp) = pod.deletion_timestamp() {
             info!("Detected deletion: {}.", timestamp);
             self.get_pods().await?;
-
-            match self
-                .pods
-                .read()
-                .await
-                .get(&(pod.namespace().to_string(), pod.name().to_string()))
-            {
-                Some(pod_sandbox) => {
-                    debug!("Stopping pod sandbox {}", pod.name());
-                    let mut client = match self.client().await {
-                        Ok(client) => client,
-                        Err(e) => {
-                            error!("Error creating client: {:?}", &e);
-                            anyhow::bail!(e);
-                        }
-                    };
-                    let request = tonic::Request::new(cri::StopPodSandboxRequest {
-                        pod_sandbox_id: pod_sandbox.id.clone(),
-                    });
-                    debug!("Sending request: {:?}", &request);
-                    let response = match client.stop_pod_sandbox(request).await {
-                        Ok(response) => response,
-                        Err(e) => {
-                            error!("Error making request: {:?}", &e);
-                            anyhow::bail!(e);
-                        }
-                    };
-                    info!("Stopped pod sandbox {}: {:?}", pod.name(), response);
-
-                    debug!("Removing pod sandbox {}", pod.name());
-                    let request = tonic::Request::new(cri::RemovePodSandboxRequest {
-                        pod_sandbox_id: pod_sandbox.id.clone(),
-                    });
-                    debug!("Sending request: {:?}", &request);
-                    let response = match client.remove_pod_sandbox(request).await {
-                        Ok(response) => response,
-                        Err(e) => {
-                            error!("Error making request: {:?}", &e);
-                            anyhow::bail!(e);
-                        }
-                    };
-                    info!("Removed pod sandbox {}: {:?}", pod.name(), response);
-
-                    // Follow up with a delete when everything is stopped
-                    let dp = kube::api::DeleteParams {
-                        grace_period_seconds: Some(0),
-                        ..Default::default()
-                    };
-                    let pod_client: kube::Api<k8s_openapi::api::core::v1::Pod> =
-                        kube::Api::namespaced(
-                            kube::client::Client::new(self.kubeconfig.clone()),
-                            pod.namespace(),
-                        );
-                    match pod_client.delete(pod.name(), &dp).await {
-                        Ok(_) => Ok(()),
-                        Err(e) => Err(e.into()),
-                    }
-                }
-                None => {
-                    warn!("Unkown pod.");
-                    Ok(())
-                }
+            self.stop_and_delete_pod_sandbox(pod.clone()).await?;
+            let dp = kube::api::DeleteParams {
+                grace_period_seconds: Some(0),
+                ..Default::default()
+            };
+            let pod_client: kube::Api<k8s_openapi::api::core::v1::Pod> = kube::Api::namespaced(
+                kube::client::Client::new(self.kubeconfig.clone()),
+                pod.namespace(),
+            );
+            match pod_client.delete(pod.name(), &dp).await {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e.into()),
             }
         } else {
             Ok(())
