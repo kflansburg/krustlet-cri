@@ -30,7 +30,7 @@ impl Provider {
         }
     }
 
-    async fn stop_and_delete_pod_sandbox(&self, pod: kubelet::Pod) -> anyhow::Result<()> {
+    async fn stop_and_delete_pod_sandbox(&self, pod: kubelet::pod::Pod) -> anyhow::Result<()> {
         match self
             .pods
             .read()
@@ -265,13 +265,13 @@ impl Provider {
     }
 }
 
-const AMD64: &'static str = "amd64";
+const AMD64: &str = "amd64";
 
 #[async_trait]
-impl kubelet::Provider for Provider {
+impl kubelet::provider::Provider for Provider {
     const ARCH: &'static str = AMD64;
 
-    async fn node(&self, builder: &mut kubelet::NodeBuilder) -> anyhow::Result<()> {
+    async fn node(&self, builder: &mut kubelet::node::Builder) -> anyhow::Result<()> {
         let request = tonic::Request::new(cri::VersionRequest {
             version: "v1alpha2".to_string(),
         });
@@ -304,7 +304,7 @@ impl kubelet::Provider for Provider {
         Ok(())
     }
 
-    async fn add(&self, pod: kubelet::Pod) -> anyhow::Result<()> {
+    async fn add(&self, pod: kubelet::pod::Pod) -> anyhow::Result<()> {
         info!(
             "ADD called for namespace {} pod {}",
             pod.namespace(),
@@ -314,7 +314,10 @@ impl kubelet::Provider for Provider {
         self.get_pods().await?;
 
         let pod_exists = {
-            self.pods.read().await.contains_key(&(pod.namespace().to_string(), pod.name().to_string()))
+            self.pods
+                .read()
+                .await
+                .contains_key(&(pod.namespace().to_string(), pod.name().to_string()))
         };
 
         if pod_exists {
@@ -335,7 +338,7 @@ impl kubelet::Provider for Provider {
             .clone()
             .unwrap_or_default()
             .hostname
-            .unwrap_or("".to_string());
+            .unwrap_or_else(|| "".to_string());
 
         let log_directory = format!("/var/log/pods/{}/{}/", pod.namespace(), pod.name());
 
@@ -383,7 +386,10 @@ impl kubelet::Provider for Provider {
         let response = match client.run_pod_sandbox(request).await {
             Ok(response) => response.into_inner(),
             Err(e) => {
-                warn!("Error creating sandbox: {:?}. Remove existing sandbox and retry.", e);
+                warn!(
+                    "Error creating sandbox: {:?}. Remove existing sandbox and retry.",
+                    e
+                );
                 self.stop_and_delete_pod_sandbox(pod.clone()).await?;
                 let request = tonic::Request::new(cri::RunPodSandboxRequest {
                     config: Some(sandbox_config.clone()),
@@ -401,7 +407,7 @@ impl kubelet::Provider for Provider {
         info!("Started pod sandbox {}: {:?}", pod.name(), &response);
         let pod_sandbox_id = response.pod_sandbox_id;
 
-        let mut status = kubelet::status::Status {
+        let mut status = kubelet::pod::Status {
             message: None,
             container_statuses: std::collections::HashMap::new(),
         };
@@ -454,11 +460,14 @@ impl kubelet::Provider for Provider {
                 image: image.clone(),
             });
 
-            let command = container.command.clone().unwrap_or(vec![]);
+            let command = container.command.clone().unwrap_or_else(Vec::new);
 
-            let args = container.args.clone().unwrap_or(vec![]);
+            let args = container.args.clone().unwrap_or_else(Vec::new);
 
-            let working_dir = container.working_dir.clone().unwrap_or("/".to_string());
+            let working_dir = container
+                .working_dir
+                .clone()
+                .unwrap_or_else(|| "/".to_string());
 
             // TODO
             let envs = vec![];
@@ -527,7 +536,7 @@ impl kubelet::Provider for Provider {
             info!("Started container {}: {:?}", &container.name, &response);
             status.container_statuses.insert(
                 container.name.clone(),
-                kubelet::status::ContainerStatus::Running {
+                kubelet::container::Status::Running {
                     timestamp: Utc::now(),
                 },
             );
@@ -540,7 +549,7 @@ impl kubelet::Provider for Provider {
         Ok(())
     }
 
-    async fn modify(&self, pod: kubelet::Pod) -> anyhow::Result<()> {
+    async fn modify(&self, pod: kubelet::pod::Pod) -> anyhow::Result<()> {
         info!(
             "MODIFY called for pod {} in namespace {}",
             pod.name(),
@@ -568,7 +577,7 @@ impl kubelet::Provider for Provider {
         }
     }
 
-    async fn delete(&self, pod: kubelet::Pod) -> anyhow::Result<()> {
+    async fn delete(&self, pod: kubelet::pod::Pod) -> anyhow::Result<()> {
         info!(
             "DELETE called for namespace {} pod {}",
             pod.namespace(),
@@ -586,7 +595,7 @@ impl kubelet::Provider for Provider {
         namespace: String,
         pod: String,
         container: String,
-        sender: kubelet::LogSender,
+        sender: kubelet::log::Sender,
     ) -> anyhow::Result<()> {
         info!(
             "LOGS called for namespace {} pod {} container {}.",
@@ -596,11 +605,11 @@ impl kubelet::Provider for Provider {
         let container_id = self.container_id(&namespace, &pod, &container).await?;
         let status = self.describe_container(container_id).await?;
         let handle = tokio::fs::File::open(status.log_path).await?;
-        tokio::spawn(kubelet::stream_logs(handle, sender));
+        tokio::spawn(kubelet::log::stream(handle, sender));
         Ok(())
     }
 
-    async fn exec(&self, pod: kubelet::Pod, command: String) -> anyhow::Result<Vec<String>> {
+    async fn exec(&self, pod: kubelet::pod::Pod, command: String) -> anyhow::Result<Vec<String>> {
         info!(
             "EXEC called for namespace {} pod {}: {} ",
             pod.namespace(),

@@ -13,7 +13,7 @@ async fn main() -> anyhow::Result<()> {
         "/run/containerd/containerd.sock",
         kubeconfig.clone(),
     );
-    let kubelet = kubelet::Kubelet::new(provider, kubeconfig, config);
+    let kubelet = kubelet::Kubelet::new(provider, kubeconfig, config).await?;
     kubelet.start().await
 
     // println!("RESPONSE={:?}", response);
