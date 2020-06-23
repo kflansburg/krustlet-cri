@@ -14,6 +14,8 @@ The goal of this project is to build a fully-featured Kubelet in Rust by leverag
 
 # Try It Out
 
+TODO - I would like to try to build an example using Docker in Docker for the quickest onboarding. 
+
 # Incomplete Roadmap
  - [ ] Pod Networking / CNI
  - [ ] Annotations and Labels
