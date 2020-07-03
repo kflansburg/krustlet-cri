@@ -9,7 +9,8 @@ metadata:
 spec:
   containers:
   - name: busybox
-    image: busybox
+    image: index.docker.io/busybox:latest
+    imagePullPolicy: IfNotPresent
     env:
     - name: TEST
       value: "foo"

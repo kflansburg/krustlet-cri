@@ -71,13 +71,3 @@ kubectl get nodes
 kubectl apply -f demo/hello.yaml
 kubectl logs -f hello
 ```
-
-# Incomplete Roadmap
- - [ ] Pod Networking / CNI
- - [x] Annotations and Labels
- - [ ] Port Mappings
- - [ ] Image registry and pull policy.
- - [ ] Pod patches / updates
- - [x] Environment variables
- - [ ] Mounts
- - [ ] Container `exec`

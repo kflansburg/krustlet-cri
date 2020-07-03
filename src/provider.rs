@@ -467,16 +467,20 @@ impl kubelet::provider::Provider for Provider {
 
         for container in pod.containers() {
             let image: String = container.image()?.unwrap().into();
-
-            match container.image_pull_policy()? {
+            let pull_policy = container.image_pull_policy()?;
+            info!("Image pull policy: {:?}", pull_policy);
+            match pull_policy {
                 kubelet::container::PullPolicy::Always => {
                     self.pull_image(&mut image_client, &image, &sandbox_config)
                         .await?
                 }
                 kubelet::container::PullPolicy::IfNotPresent => {
                     if !self.image_present(&mut image_client, &image).await? {
+                        info!("Image not present.");
                         self.pull_image(&mut image_client, &image, &sandbox_config)
                             .await?
+                    } else {
+                        info!("Image present.");
                     }
                 }
                 kubelet::container::PullPolicy::Never => (),
