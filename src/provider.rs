@@ -263,6 +263,55 @@ impl Provider {
         let client = cri::image_service_client::ImageServiceClient::new(channel);
         Ok(client)
     }
+
+    async fn image_present(
+        &self,
+        image_client: &mut cri::image_service_client::ImageServiceClient<Channel>,
+        image: &str,
+    ) -> anyhow::Result<bool> {
+        let request = tonic::Request::new(cri::ImageStatusRequest {
+            image: Some(cri::ImageSpec {
+                image: image.to_string(),
+            }),
+            verbose: false,
+        });
+        debug!("Sending request: {:?}", &request);
+        let response = match image_client.image_status(request).await {
+            Ok(response) => response.into_inner(),
+            Err(e) => {
+                error!("Error making request: {:?}", &e);
+                anyhow::bail!(e);
+            }
+        };
+        Ok(response.image.is_some())
+    }
+
+    async fn pull_image(
+        &self,
+        image_client: &mut cri::image_service_client::ImageServiceClient<Channel>,
+        image: &str,
+        sandbox_config: &cri::PodSandboxConfig,
+    ) -> anyhow::Result<()> {
+        info!("Pulling image: {}", &image);
+        let request = tonic::Request::new(cri::PullImageRequest {
+            image: Some(cri::ImageSpec {
+                image: image.to_string(),
+            }),
+            // TODO support registry auth
+            auth: None,
+            sandbox_config: Some(sandbox_config.clone()),
+        });
+        debug!("Sending request: {:?}", &request);
+        let response = match image_client.pull_image(request).await {
+            Ok(response) => response.into_inner(),
+            Err(e) => {
+                error!("Error making request: {:?}", &e);
+                anyhow::bail!(e);
+            }
+        };
+        info!("Pulled image: {:?}", response);
+        Ok(())
+    }
 }
 
 const AMD64: &str = "amd64";
@@ -417,39 +466,34 @@ impl kubelet::provider::Provider for Provider {
         };
 
         for container in pod.containers() {
-            // TODO Support image pull policy.
-            let image = container.image.as_ref().unwrap().to_string();
-            debug!("Pulling image: {}", &image);
-            let request = tonic::Request::new(cri::PullImageRequest {
-                image: Some(cri::ImageSpec {
-                    image: image.clone(),
-                }),
-                // TODO support registry auth
-                auth: None,
-                sandbox_config: Some(sandbox_config.clone()),
-            });
-            debug!("Sending request: {:?}", &request);
-            let response = match image_client.pull_image(request).await {
-                Ok(response) => response.into_inner(),
-                Err(e) => {
-                    error!("Error making request: {:?}", &e);
-                    anyhow::bail!(e);
-                }
-            };
-            info!("Pulled image: {:?}", response);
+            let image: String = container.image()?.unwrap().into();
 
-            debug!("Creating container: {}", &container.name);
+            match container.image_pull_policy()? {
+                kubelet::container::PullPolicy::Always => {
+                    self.pull_image(&mut image_client, &image, &sandbox_config)
+                        .await?
+                }
+                kubelet::container::PullPolicy::IfNotPresent => {
+                    if !self.image_present(&mut image_client, &image).await? {
+                        self.pull_image(&mut image_client, &image, &sandbox_config)
+                            .await?
+                    }
+                }
+                kubelet::container::PullPolicy::Never => (),
+            }
+
+            debug!("Creating container: {}", container.name());
 
             tokio::fs::create_dir_all(format!(
                 "/var/log/pods/{}/{}/{}",
                 pod.namespace(),
                 pod.name(),
-                &container.name
+                container.name()
             ))
             .await?;
 
             let metadata = Some(cri::ContainerMetadata {
-                name: container.name.clone(),
+                name: container.name().to_string(),
                 attempt: 0,
             });
 
@@ -457,18 +501,18 @@ impl kubelet::provider::Provider for Provider {
                 image: image.clone(),
             });
 
-            let command = container.command.clone().unwrap_or_else(Vec::new);
+            let command = container.command().clone().unwrap_or_else(Vec::new);
 
-            let args = container.args.clone().unwrap_or_else(Vec::new);
+            let args = container.args().clone().unwrap_or_else(Vec::new);
 
             let working_dir = container
-                .working_dir
-                .clone()
+                .working_dir()
+                .cloned()
                 .unwrap_or_else(|| "/".to_string());
 
             // TODO: Support value_from
             let envs = container
-                .env
+                .env()
                 .clone()
                 .unwrap_or_else(|| vec![])
                 .into_iter()
@@ -491,7 +535,7 @@ impl kubelet::provider::Provider for Provider {
 
             let annotations = std::collections::BTreeMap::new();
 
-            let log_path = format!("{}/log", &container.name);
+            let log_path = format!("{}/log", container.name());
 
             let linux = None;
 
@@ -527,10 +571,10 @@ impl kubelet::provider::Provider for Provider {
                     anyhow::bail!(e);
                 }
             };
-            debug!("Created container {}: {:?}", &container.name, &response);
+            debug!("Created container {}: {:?}", container.name(), &response);
             let container_id = response.container_id;
 
-            debug!("Starting container: {}", &container.name);
+            debug!("Starting container: {}", container.name());
             let request = tonic::Request::new(cri::StartContainerRequest { container_id });
             debug!("Sending request: {:?}", &request);
             let response = match client.start_container(request).await {
@@ -540,9 +584,9 @@ impl kubelet::provider::Provider for Provider {
                     anyhow::bail!(e);
                 }
             };
-            info!("Started container {}: {:?}", &container.name, &response);
+            info!("Started container {}: {:?}", container.name(), &response);
             status.container_statuses.insert(
-                container.name.clone(),
+                container.name().to_string(),
                 kubelet::container::Status::Running {
                     timestamp: Utc::now(),
                 },
