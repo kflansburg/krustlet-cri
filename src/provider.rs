@@ -349,14 +349,11 @@ impl kubelet::provider::Provider for Provider {
             options: vec![],
         });
 
-        // TODO
         let port_mappings = vec![];
 
-        // TODO
-        let labels = std::collections::HashMap::new();
+        let labels = pod.labels().clone();
 
-        // TODO
-        let annotations = std::collections::HashMap::new();
+        let annotations = pod.annotations().clone();
 
         let linux = None;
 
@@ -478,11 +475,9 @@ impl kubelet::provider::Provider for Provider {
             // TODO
             let devices = vec![];
 
-            // TODO
-            let labels = std::collections::HashMap::new();
+            let labels = std::collections::BTreeMap::new();
 
-            // TODO
-            let annotations = std::collections::HashMap::new();
+            let annotations = std::collections::BTreeMap::new();
 
             let log_path = format!("{}/log", &container.name);
 
