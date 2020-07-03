@@ -2,10 +2,17 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: hello
+  annotations:
+    foo: bar
+  labels:
+    biz: baz
 spec:
   containers:
   - name: busybox
     image: busybox
-    command: ['sh', '-c', 'while true; do echo "$(date) Hello World"; sleep 10; done']
+    env:
+    - name: TEST
+      value: "foo"
+    command: ['sh', '-c', 'env; while true; do echo "$(date) Hello World"; sleep 10; done']
   nodeSelector:
     kubernetes.io/hostname: krustlet-cri 

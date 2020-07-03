@@ -466,8 +466,20 @@ impl kubelet::provider::Provider for Provider {
                 .clone()
                 .unwrap_or_else(|| "/".to_string());
 
-            // TODO
-            let envs = vec![];
+            // TODO: Support value_from
+            let envs = container
+                .env
+                .clone()
+                .unwrap_or_else(|| vec![])
+                .into_iter()
+                .filter_map(|env| match env.value {
+                    Some(value) => Some(k8s_cri::v1alpha2::KeyValue {
+                        key: env.name,
+                        value,
+                    }),
+                    None => None,
+                })
+                .collect();
 
             // TODO
             let mounts = vec![];

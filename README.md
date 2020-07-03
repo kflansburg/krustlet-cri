@@ -74,10 +74,10 @@ kubectl logs -f hello
 
 # Incomplete Roadmap
  - [ ] Pod Networking / CNI
- - [ ] Annotations and Labels
+ - [x] Annotations and Labels
  - [ ] Port Mappings
  - [ ] Image registry and pull policy.
  - [ ] Pod patches / updates
- - [ ] Environment variables
+ - [x] Environment variables
  - [ ] Mounts
  - [ ] Container `exec`
