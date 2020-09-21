@@ -1,12 +1,13 @@
 use anyhow::bail;
 use async_trait::async_trait;
-use chrono::Utc;
 use k8s_cri::v1alpha2 as cri;
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
 use std::convert::TryFrom;
 use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
+
+use crate::states::{PodState, Registered, Terminated};
 
 type Namespace = String;
 type Pod = String;
@@ -318,7 +319,19 @@ const AMD64: &str = "amd64";
 
 #[async_trait]
 impl kubelet::provider::Provider for Provider {
+    type PodState = PodState;
+
+    type InitialState = Registered;
+    type TerminatedState = Terminated;
+
     const ARCH: &'static str = AMD64;
+
+    async fn initialize_pod_state(
+        &self,
+        _pod: &kubelet::pod::Pod,
+    ) -> anyhow::Result<Self::PodState> {
+        Ok(PodState)
+    }
 
     async fn node(&self, builder: &mut kubelet::node::Builder) -> anyhow::Result<()> {
         let request = tonic::Request::new(cri::VersionRequest {
@@ -353,297 +366,297 @@ impl kubelet::provider::Provider for Provider {
         Ok(())
     }
 
-    async fn add(&self, pod: kubelet::pod::Pod) -> anyhow::Result<()> {
-        info!(
-            "ADD called for namespace {} pod {}",
-            pod.namespace(),
-            pod.name()
-        );
+    // async fn add(&self, pod: kubelet::pod::Pod) -> anyhow::Result<()> {
+    //     info!(
+    //         "ADD called for namespace {} pod {}",
+    //         pod.namespace(),
+    //         pod.name()
+    //     );
 
-        self.get_pods().await?;
+    //     self.get_pods().await?;
 
-        let pod_exists = {
-            self.pods
-                .read()
-                .await
-                .contains_key(&(pod.namespace().to_string(), pod.name().to_string()))
-        };
+    //     let pod_exists = {
+    //         self.pods
+    //             .read()
+    //             .await
+    //             .contains_key(&(pod.namespace().to_string(), pod.name().to_string()))
+    //     };
 
-        if pod_exists {
-            self.stop_and_delete_pod_sandbox(pod.clone()).await?;
-        }
+    //     if pod_exists {
+    //         self.stop_and_delete_pod_sandbox(pod.clone()).await?;
+    //     }
 
-        debug!("Starting pod sandbox {}", pod.name());
-        let metadata = Some(cri::PodSandboxMetadata {
-            name: pod.name().to_string(),
-            namespace: pod.namespace().to_string(),
-            uid: "".to_string(),
-            attempt: 0,
-        });
+    //     debug!("Starting pod sandbox {}", pod.name());
+    //     let metadata = Some(cri::PodSandboxMetadata {
+    //         name: pod.name().to_string(),
+    //         namespace: pod.namespace().to_string(),
+    //         uid: "".to_string(),
+    //         attempt: 0,
+    //     });
 
-        let hostname = pod
-            .as_kube_pod()
-            .spec
-            .clone()
-            .unwrap_or_default()
-            .hostname
-            .unwrap_or_else(|| "".to_string());
+    //     let hostname = pod
+    //         .as_kube_pod()
+    //         .spec
+    //         .clone()
+    //         .unwrap_or_default()
+    //         .hostname
+    //         .unwrap_or_else(|| "".to_string());
 
-        let log_directory = format!("/var/log/pods/{}/{}/", pod.namespace(), pod.name());
+    //     let log_directory = format!("/var/log/pods/{}/{}/", pod.namespace(), pod.name());
 
-        // TODO
-        let dns_config = Some(cri::DnsConfig {
-            servers: vec![],
-            searches: vec![],
-            options: vec![],
-        });
+    //     // TODO
+    //     let dns_config = Some(cri::DnsConfig {
+    //         servers: vec![],
+    //         searches: vec![],
+    //         options: vec![],
+    //     });
 
-        let port_mappings = vec![];
+    //     let port_mappings = vec![];
 
-        let labels = pod.labels().clone();
+    //     let labels = pod.labels().clone();
 
-        let annotations = pod.annotations().clone();
+    //     let annotations = pod.annotations().clone();
 
-        let linux = None;
+    //     let linux = None;
 
-        let sandbox_config = cri::PodSandboxConfig {
-            metadata,
-            hostname,
-            log_directory,
-            dns_config,
-            port_mappings,
-            labels,
-            annotations,
-            linux,
-        };
+    //     let sandbox_config = cri::PodSandboxConfig {
+    //         metadata,
+    //         hostname,
+    //         log_directory,
+    //         dns_config,
+    //         port_mappings,
+    //         labels,
+    //         annotations,
+    //         linux,
+    //     };
 
-        let request = tonic::Request::new(cri::RunPodSandboxRequest {
-            config: Some(sandbox_config.clone()),
-            runtime_handler: "".to_string(),
-        });
-        debug!("Sending request: {:?}", &request);
-        let mut client = match self.client().await {
-            Ok(client) => client,
-            Err(e) => {
-                error!("Error creating client: {:?}", &e);
-                anyhow::bail!(e);
-            }
-        };
-        let response = match client.run_pod_sandbox(request).await {
-            Ok(response) => response.into_inner(),
-            Err(e) => {
-                warn!(
-                    "Error creating sandbox: {:?}. Remove existing sandbox and retry.",
-                    e
-                );
-                self.stop_and_delete_pod_sandbox(pod.clone()).await?;
-                let request = tonic::Request::new(cri::RunPodSandboxRequest {
-                    config: Some(sandbox_config.clone()),
-                    runtime_handler: "".to_string(),
-                });
-                match client.run_pod_sandbox(request).await {
-                    Ok(response) => response.into_inner(),
-                    Err(e) => {
-                        error!("Error making request: {:?}", &e);
-                        anyhow::bail!(e);
-                    }
-                }
-            }
-        };
-        info!("Started pod sandbox {}: {:?}", pod.name(), &response);
-        let pod_sandbox_id = response.pod_sandbox_id;
+    //     let request = tonic::Request::new(cri::RunPodSandboxRequest {
+    //         config: Some(sandbox_config.clone()),
+    //         runtime_handler: "".to_string(),
+    //     });
+    //     debug!("Sending request: {:?}", &request);
+    //     let mut client = match self.client().await {
+    //         Ok(client) => client,
+    //         Err(e) => {
+    //             error!("Error creating client: {:?}", &e);
+    //             anyhow::bail!(e);
+    //         }
+    //     };
+    //     let response = match client.run_pod_sandbox(request).await {
+    //         Ok(response) => response.into_inner(),
+    //         Err(e) => {
+    //             warn!(
+    //                 "Error creating sandbox: {:?}. Remove existing sandbox and retry.",
+    //                 e
+    //             );
+    //             self.stop_and_delete_pod_sandbox(pod.clone()).await?;
+    //             let request = tonic::Request::new(cri::RunPodSandboxRequest {
+    //                 config: Some(sandbox_config.clone()),
+    //                 runtime_handler: "".to_string(),
+    //             });
+    //             match client.run_pod_sandbox(request).await {
+    //                 Ok(response) => response.into_inner(),
+    //                 Err(e) => {
+    //                     error!("Error making request: {:?}", &e);
+    //                     anyhow::bail!(e);
+    //                 }
+    //             }
+    //         }
+    //     };
+    //     info!("Started pod sandbox {}: {:?}", pod.name(), &response);
+    //     let pod_sandbox_id = response.pod_sandbox_id;
 
-        let mut status = kubelet::pod::Status {
-            message: kubelet::pod::StatusMessage::LeaveUnchanged,
-            container_statuses: std::collections::HashMap::new(),
-        };
-        let mut image_client = match self.image_client().await {
-            Ok(client) => client,
-            Err(e) => {
-                error!("Error creating image client: {:?}", &e);
-                anyhow::bail!(e);
-            }
-        };
+    //     let mut status = kubelet::pod::Status {
+    //         message: kubelet::pod::StatusMessage::LeaveUnchanged,
+    //         container_statuses: std::collections::HashMap::new(),
+    //     };
+    //     let mut image_client = match self.image_client().await {
+    //         Ok(client) => client,
+    //         Err(e) => {
+    //             error!("Error creating image client: {:?}", &e);
+    //             anyhow::bail!(e);
+    //         }
+    //     };
 
-        for container in pod.containers() {
-            let image: String = container.image()?.unwrap().into();
-            let pull_policy = container.effective_pull_policy()?;
-            info!("Image pull policy: {:?}", pull_policy);
-            match pull_policy {
-                kubelet::container::PullPolicy::Always => {
-                    self.pull_image(&mut image_client, &image, &sandbox_config)
-                        .await?
-                }
-                kubelet::container::PullPolicy::IfNotPresent => {
-                    if !self.image_present(&mut image_client, &image).await? {
-                        info!("Image not present.");
-                        self.pull_image(&mut image_client, &image, &sandbox_config)
-                            .await?
-                    } else {
-                        info!("Image present.");
-                    }
-                }
-                kubelet::container::PullPolicy::Never => (),
-            }
+    //     for container in pod.containers() {
+    //         let image: String = container.image()?.unwrap().into();
+    //         let pull_policy = container.effective_pull_policy()?;
+    //         info!("Image pull policy: {:?}", pull_policy);
+    //         match pull_policy {
+    //             kubelet::container::PullPolicy::Always => {
+    //                 self.pull_image(&mut image_client, &image, &sandbox_config)
+    //                     .await?
+    //             }
+    //             kubelet::container::PullPolicy::IfNotPresent => {
+    //                 if !self.image_present(&mut image_client, &image).await? {
+    //                     info!("Image not present.");
+    //                     self.pull_image(&mut image_client, &image, &sandbox_config)
+    //                         .await?
+    //                 } else {
+    //                     info!("Image present.");
+    //                 }
+    //             }
+    //             kubelet::container::PullPolicy::Never => (),
+    //         }
 
-            debug!("Creating container: {}", container.name());
+    //         debug!("Creating container: {}", container.name());
 
-            tokio::fs::create_dir_all(format!(
-                "/var/log/pods/{}/{}/{}",
-                pod.namespace(),
-                pod.name(),
-                container.name()
-            ))
-            .await?;
+    //         tokio::fs::create_dir_all(format!(
+    //             "/var/log/pods/{}/{}/{}",
+    //             pod.namespace(),
+    //             pod.name(),
+    //             container.name()
+    //         ))
+    //         .await?;
 
-            let metadata = Some(cri::ContainerMetadata {
-                name: container.name().to_string(),
-                attempt: 0,
-            });
+    //         let metadata = Some(cri::ContainerMetadata {
+    //             name: container.name().to_string(),
+    //             attempt: 0,
+    //         });
 
-            let image = Some(cri::ImageSpec {
-                image: image.clone(),
-            });
+    //         let image = Some(cri::ImageSpec {
+    //             image: image.clone(),
+    //         });
 
-            let command = container.command().clone().unwrap_or_else(Vec::new);
+    //         let command = container.command().clone().unwrap_or_else(Vec::new);
 
-            let args = container.args().clone().unwrap_or_else(Vec::new);
+    //         let args = container.args().clone().unwrap_or_else(Vec::new);
 
-            let working_dir = container
-                .working_dir()
-                .cloned()
-                .unwrap_or_else(|| "/".to_string());
+    //         let working_dir = container
+    //             .working_dir()
+    //             .cloned()
+    //             .unwrap_or_else(|| "/".to_string());
 
-            // TODO: Support value_from
-            let envs = container
-                .env()
-                .clone()
-                .unwrap_or_else(Vec::new)
-                .into_iter()
-                .filter_map(|env| match env.value {
-                    Some(value) => Some(k8s_cri::v1alpha2::KeyValue {
-                        key: env.name,
-                        value,
-                    }),
-                    None => None,
-                })
-                .collect();
+    //         // TODO: Support value_from
+    //         let envs = container
+    //             .env()
+    //             .clone()
+    //             .unwrap_or_else(Vec::new)
+    //             .into_iter()
+    //             .filter_map(|env| match env.value {
+    //                 Some(value) => Some(k8s_cri::v1alpha2::KeyValue {
+    //                     key: env.name,
+    //                     value,
+    //                 }),
+    //                 None => None,
+    //             })
+    //             .collect();
 
-            // TODO
-            let mounts = vec![];
+    //         // TODO
+    //         let mounts = vec![];
 
-            // TODO
-            let devices = vec![];
+    //         // TODO
+    //         let devices = vec![];
 
-            let labels = std::collections::BTreeMap::new();
+    //         let labels = std::collections::BTreeMap::new();
 
-            let annotations = std::collections::BTreeMap::new();
+    //         let annotations = std::collections::BTreeMap::new();
 
-            let log_path = format!("{}/log", container.name());
+    //         let log_path = format!("{}/log", container.name());
 
-            let linux = None;
+    //         let linux = None;
 
-            let config = Some(cri::ContainerConfig {
-                metadata,
-                image,
-                command,
-                args,
-                working_dir,
-                envs,
-                mounts,
-                devices,
-                labels,
-                annotations,
-                log_path,
-                stdin: false,
-                stdin_once: false,
-                tty: false,
-                linux,
-                windows: None,
-            });
+    //         let config = Some(cri::ContainerConfig {
+    //             metadata,
+    //             image,
+    //             command,
+    //             args,
+    //             working_dir,
+    //             envs,
+    //             mounts,
+    //             devices,
+    //             labels,
+    //             annotations,
+    //             log_path,
+    //             stdin: false,
+    //             stdin_once: false,
+    //             tty: false,
+    //             linux,
+    //             windows: None,
+    //         });
 
-            let request = tonic::Request::new(cri::CreateContainerRequest {
-                pod_sandbox_id: pod_sandbox_id.clone(),
-                config,
-                sandbox_config: Some(sandbox_config.clone()),
-            });
-            debug!("Sending request: {:?}", &request);
-            let response = match client.create_container(request).await {
-                Ok(response) => response.into_inner(),
-                Err(e) => {
-                    error!("Error making request: {:?}", &e);
-                    anyhow::bail!(e);
-                }
-            };
-            debug!("Created container {}: {:?}", container.name(), &response);
-            let container_id = response.container_id;
+    //         let request = tonic::Request::new(cri::CreateContainerRequest {
+    //             pod_sandbox_id: pod_sandbox_id.clone(),
+    //             config,
+    //             sandbox_config: Some(sandbox_config.clone()),
+    //         });
+    //         debug!("Sending request: {:?}", &request);
+    //         let response = match client.create_container(request).await {
+    //             Ok(response) => response.into_inner(),
+    //             Err(e) => {
+    //                 error!("Error making request: {:?}", &e);
+    //                 anyhow::bail!(e);
+    //             }
+    //         };
+    //         debug!("Created container {}: {:?}", container.name(), &response);
+    //         let container_id = response.container_id;
 
-            debug!("Starting container: {}", container.name());
-            let request = tonic::Request::new(cri::StartContainerRequest { container_id });
-            debug!("Sending request: {:?}", &request);
-            let response = match client.start_container(request).await {
-                Ok(response) => response.into_inner(),
-                Err(e) => {
-                    error!("Error making request: {:?}", &e);
-                    anyhow::bail!(e);
-                }
-            };
-            info!("Started container {}: {:?}", container.name(), &response);
-            status.container_statuses.insert(
-                kubelet::container::ContainerKey::App(container.name().to_string()),
-                kubelet::container::Status::Running {
-                    timestamp: Utc::now(),
-                },
-            );
-        }
+    //         debug!("Starting container: {}", container.name());
+    //         let request = tonic::Request::new(cri::StartContainerRequest { container_id });
+    //         debug!("Sending request: {:?}", &request);
+    //         let response = match client.start_container(request).await {
+    //             Ok(response) => response.into_inner(),
+    //             Err(e) => {
+    //                 error!("Error making request: {:?}", &e);
+    //                 anyhow::bail!(e);
+    //             }
+    //         };
+    //         info!("Started container {}: {:?}", container.name(), &response);
+    //         status.container_statuses.insert(
+    //             kubelet::container::ContainerKey::App(container.name().to_string()),
+    //             kubelet::container::Status::Running {
+    //                 timestamp: Utc::now(),
+    //             },
+    //         );
+    //     }
 
-        let client = kube::Client::new(self.kubeconfig.clone());
-        pod.patch_status(client, status).await;
-        debug!("Updated pod status.");
+    //     let client = kube::Client::new(self.kubeconfig.clone());
+    //     pod.patch_status(client, status).await;
+    //     debug!("Updated pod status.");
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
-    async fn modify(&self, pod: kubelet::pod::Pod) -> anyhow::Result<()> {
-        info!(
-            "MODIFY called for pod {} in namespace {}",
-            pod.name(),
-            pod.namespace()
-        );
-        trace!("Modified pod spec: {:#?}", pod.as_kube_pod());
-        if let Some(timestamp) = pod.deletion_timestamp() {
-            info!("Detected deletion: {}.", timestamp);
-            self.get_pods().await?;
-            self.stop_and_delete_pod_sandbox(pod.clone()).await?;
-            let dp = kube::api::DeleteParams {
-                grace_period_seconds: Some(0),
-                ..Default::default()
-            };
-            let pod_client: kube::Api<k8s_openapi::api::core::v1::Pod> = kube::Api::namespaced(
-                kube::client::Client::new(self.kubeconfig.clone()),
-                pod.namespace(),
-            );
-            match pod_client.delete(pod.name(), &dp).await {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e.into()),
-            }
-        } else {
-            Ok(())
-        }
-    }
+    // async fn modify(&self, pod: kubelet::pod::Pod) -> anyhow::Result<()> {
+    //     info!(
+    //         "MODIFY called for pod {} in namespace {}",
+    //         pod.name(),
+    //         pod.namespace()
+    //     );
+    //     trace!("Modified pod spec: {:#?}", pod.as_kube_pod());
+    //     if let Some(timestamp) = pod.deletion_timestamp() {
+    //         info!("Detected deletion: {}.", timestamp);
+    //         self.get_pods().await?;
+    //         self.stop_and_delete_pod_sandbox(pod.clone()).await?;
+    //         let dp = kube::api::DeleteParams {
+    //             grace_period_seconds: Some(0),
+    //             ..Default::default()
+    //         };
+    //         let pod_client: kube::Api<k8s_openapi::api::core::v1::Pod> = kube::Api::namespaced(
+    //             kube::client::Client::new(self.kubeconfig.clone()),
+    //             pod.namespace(),
+    //         );
+    //         match pod_client.delete(pod.name(), &dp).await {
+    //             Ok(_) => Ok(()),
+    //             Err(e) => Err(e.into()),
+    //         }
+    //     } else {
+    //         Ok(())
+    //     }
+    // }
 
-    async fn delete(&self, pod: kubelet::pod::Pod) -> anyhow::Result<()> {
-        info!(
-            "DELETE called for namespace {} pod {}",
-            pod.namespace(),
-            pod.name()
-        );
-        self.pods
-            .write()
-            .await
-            .remove(&(pod.namespace().to_string(), pod.name().to_string()));
-        Ok(())
-    }
+    // async fn delete(&self, pod: kubelet::pod::Pod) -> anyhow::Result<()> {
+    //     info!(
+    //         "DELETE called for namespace {} pod {}",
+    //         pod.namespace(),
+    //         pod.name()
+    //     );
+    //     self.pods
+    //         .write()
+    //         .await
+    //         .remove(&(pod.namespace().to_string(), pod.name().to_string()));
+    //     Ok(())
+    // }
 
     async fn logs(
         &self,
