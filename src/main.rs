@@ -1,3 +1,4 @@
+#![type_length_limit = "1271125"]
 mod provider;
 mod states;
 
