@@ -454,7 +454,7 @@ impl kubelet::provider::Provider for Provider {
         let pod_sandbox_id = response.pod_sandbox_id;
 
         let mut status = kubelet::pod::Status {
-            message: None,
+            message: kubelet::pod::StatusMessage::LeaveUnchanged,
             container_statuses: std::collections::HashMap::new(),
         };
         let mut image_client = match self.image_client().await {
@@ -467,7 +467,7 @@ impl kubelet::provider::Provider for Provider {
 
         for container in pod.containers() {
             let image: String = container.image()?.unwrap().into();
-            let pull_policy = container.image_pull_policy()?;
+            let pull_policy = container.effective_pull_policy()?;
             info!("Image pull policy: {:?}", pull_policy);
             match pull_policy {
                 kubelet::container::PullPolicy::Always => {
@@ -518,7 +518,7 @@ impl kubelet::provider::Provider for Provider {
             let envs = container
                 .env()
                 .clone()
-                .unwrap_or_else(|| vec![])
+                .unwrap_or_else(Vec::new)
                 .into_iter()
                 .filter_map(|env| match env.value {
                     Some(value) => Some(k8s_cri::v1alpha2::KeyValue {
@@ -590,7 +590,7 @@ impl kubelet::provider::Provider for Provider {
             };
             info!("Started container {}: {:?}", container.name(), &response);
             status.container_statuses.insert(
-                container.name().to_string(),
+                kubelet::container::ContainerKey::App(container.name().to_string()),
                 kubelet::container::Status::Running {
                     timestamp: Utc::now(),
                 },
