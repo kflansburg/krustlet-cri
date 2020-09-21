@@ -1,0 +1,29 @@
+name: Test 
+
+on:
+  push:
+    branches: 
+    - "*"
+       
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Check
+        run: cargo clippy 
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Run tests
+        run: cargo test --tests --verbose
+
+      - name: Doctests
+        run: cargo test --doc --all

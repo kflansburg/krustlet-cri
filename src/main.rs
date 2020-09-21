@@ -8,7 +8,8 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     debug!("Loading Kubeconfig.");
-    let kubeconfig = kubelet::bootstrap(&config, &config.bootstrap_file, |s| println!("{}", s)).await?;
+    let kubeconfig =
+        kubelet::bootstrap(&config, &config.bootstrap_file, |s| println!("{}", s)).await?;
 
     debug!("Creating Provider.");
     let provider = provider::Provider::new_from_socket_address(
