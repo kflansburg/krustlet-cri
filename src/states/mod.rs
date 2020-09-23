@@ -9,6 +9,7 @@ use tower::service_fn;
 mod error;
 mod image_pull;
 mod registered;
+mod running;
 mod starting;
 mod terminated;
 

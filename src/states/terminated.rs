@@ -4,11 +4,11 @@ use k8s_cri::v1alpha2 as cri;
 use kubelet::state::prelude::*;
 use log::{debug, error, info, warn};
 
-/// The Kubelet is aware of the Pod.
+/// Pod was deleted.
 #[derive(Default, Debug)]
 pub struct Terminated;
 
-async fn stop_and_delete_pod_sandbox(
+pub async fn stop_and_delete_pod_sandbox(
     pod_state: &PodState,
     pod: kubelet::pod::Pod,
 ) -> anyhow::Result<()> {
