@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use log::info;
 
+use super::image_pull::ImagePull;
 use super::PodState;
 use kubelet::state::prelude::*;
 
@@ -15,8 +16,12 @@ impl State<PodState> for Registered {
         _pod_state: &mut PodState,
         pod: &Pod,
     ) -> anyhow::Result<Transition<PodState>> {
-        info!("Pod added: {}.", pod.name());
-        unimplemented!()
+        info!(
+            "ADD called for namespace {} pod {}",
+            pod.namespace(),
+            pod.name()
+        );
+        Ok(Transition::next(self, ImagePull))
     }
 
     async fn json_status(
@@ -27,3 +32,5 @@ impl State<PodState> for Registered {
         make_status(Phase::Pending, "Registered")
     }
 }
+
+impl TransitionTo<ImagePull> for Registered {}
