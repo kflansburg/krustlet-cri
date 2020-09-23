@@ -37,6 +37,38 @@ impl SharedPodState {
         Ok(client)
     }
 
+    pub async fn refresh_containers(&self) -> anyhow::Result<()> {
+        debug!("Loading containers.");
+        let request = tonic::Request::new(cri::ListContainersRequest { filter: None });
+        debug!("Sending request: {:?}", &request);
+        let mut client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => {
+                error!("Error creating client: {:?}", &e);
+                anyhow::bail!(e);
+            }
+        };
+        let response = match client.list_containers(request).await {
+            Ok(response) => response.into_inner(),
+            Err(e) => {
+                error!("Error making request: {:?}", &e);
+                anyhow::bail!(e);
+            }
+        };
+
+        debug!("{:?}", &response);
+        info!("Found {} containerss.", response.containers.len());
+
+        let mut containers = self.containers.write().await;
+        *containers = std::collections::HashMap::new();
+        for container in response.containers {
+            if let Some(meta) = container.metadata.clone() {
+                containers.insert((container.pod_sandbox_id.clone(), meta.name), container);
+            }
+        }
+        Ok(())
+    }
+
     pub async fn refresh_pods(&self) -> anyhow::Result<()> {
         debug!("Refreshing Pods.");
         let request = tonic::Request::new(cri::ListPodSandboxRequest { filter: None });

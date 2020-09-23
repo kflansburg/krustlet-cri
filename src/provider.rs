@@ -31,132 +31,120 @@ impl Provider {
         }
     }
 
-    // async fn pod_id(&self, namespace: &str, pod: &str) -> anyhow::Result<Id> {
-    //     let key = (namespace.to_string(), pod.to_string());
-    //     let has_pod = self.pods.read().await.contains_key(&key);
-    //     if has_pod {
-    //         Ok(self.pods.read().await.get(&key).unwrap().id.to_string())
-    //     } else {
-    //         self.get_pods().await?;
-    //         let has_pod = self.pods.read().await.contains_key(&key);
-    //         if has_pod {
-    //             Ok(self.pods.read().await.get(&key).unwrap().id.to_string())
-    //         } else {
-    //             error!("Could not find namespace {} pod {}.", namespace, pod);
-    //             bail!(kubelet::provider::ProviderError::PodNotFound {
-    //                 pod_name: pod.to_string(),
-    //             });
-    //         }
-    //     }
-    // }
+    async fn pod_id(&self, namespace: &str, pod: &str) -> anyhow::Result<Id> {
+        let key = (namespace.to_string(), pod.to_string());
+        let has_pod = self.shared.pods.read().await.contains_key(&key);
+        if has_pod {
+            Ok(self
+                .shared
+                .pods
+                .read()
+                .await
+                .get(&key)
+                .unwrap()
+                .id
+                .to_string())
+        } else {
+            self.shared.refresh_pods().await?;
+            let has_pod = self.shared.pods.read().await.contains_key(&key);
+            if has_pod {
+                Ok(self
+                    .shared
+                    .pods
+                    .read()
+                    .await
+                    .get(&key)
+                    .unwrap()
+                    .id
+                    .to_string())
+            } else {
+                error!("Could not find namespace {} pod {}.", namespace, pod);
+                anyhow::bail!(kubelet::provider::ProviderError::PodNotFound {
+                    pod_name: pod.to_string(),
+                });
+            }
+        }
+    }
 
-    // async fn container_id(
-    //     &self,
-    //     namespace: &str,
-    //     pod: &str,
-    //     container: &str,
-    // ) -> anyhow::Result<Id> {
-    //     let pod_id = self.pod_id(namespace, pod).await?;
-    //     let key = (pod_id, container.to_string());
-    //     let has_container = self.containers.read().await.contains_key(&key);
-    //     if has_container {
-    //         Ok(self
-    //             .containers
-    //             .read()
-    //             .await
-    //             .get(&key)
-    //             .unwrap()
-    //             .id
-    //             .to_string())
-    //     } else {
-    //         self.get_containers().await?;
-    //         let has_container = self.containers.read().await.contains_key(&key);
-    //         if has_container {
-    //             Ok(self
-    //                 .containers
-    //                 .read()
-    //                 .await
-    //                 .get(&key)
-    //                 .unwrap()
-    //                 .id
-    //                 .to_string())
-    //         } else {
-    //             error!(
-    //                 "Could not find namespace {} pod {} container {}.",
-    //                 namespace, pod, container
-    //             );
-    //             bail!(kubelet::provider::ProviderError::ContainerNotFound {
-    //                 pod_name: pod.to_string(),
-    //                 container_name: container.to_string(),
-    //             });
-    //         }
-    //     }
-    // }
+    async fn container_id(
+        &self,
+        namespace: &str,
+        pod: &str,
+        container: &str,
+    ) -> anyhow::Result<Id> {
+        let pod_id = self.pod_id(namespace, pod).await?;
+        let key = (pod_id, container.to_string());
+        let has_container = self.shared.containers.read().await.contains_key(&key);
+        if has_container {
+            Ok(self
+                .shared
+                .containers
+                .read()
+                .await
+                .get(&key)
+                .unwrap()
+                .id
+                .to_string())
+        } else {
+            self.shared.refresh_containers().await?;
+            let has_container = self.shared.containers.read().await.contains_key(&key);
+            if has_container {
+                Ok(self
+                    .shared
+                    .containers
+                    .read()
+                    .await
+                    .get(&key)
+                    .unwrap()
+                    .id
+                    .to_string())
+            } else {
+                error!(
+                    "Could not find namespace {} pod {} container {}.",
+                    namespace, pod, container
+                );
+                Err(anyhow::anyhow!(
+                    kubelet::provider::ProviderError::ContainerNotFound {
+                        pod_name: pod.to_string(),
+                        container_name: container.to_string(),
+                    }
+                ))
+            }
+        }
+    }
 
-    // async fn get_containers(&self) -> anyhow::Result<()> {
-    //     debug!("Loading containers.");
-    //     let request = tonic::Request::new(cri::ListContainersRequest { filter: None });
-    //     debug!("Sending request: {:?}", &request);
-    //     let mut client = match self.client().await {
-    //         Ok(client) => client,
-    //         Err(e) => {
-    //             error!("Error creating client: {:?}", &e);
-    //             anyhow::bail!(e);
-    //         }
-    //     };
-    //     let response = match client.list_containers(request).await {
-    //         Ok(response) => response.into_inner(),
-    //         Err(e) => {
-    //             error!("Error making request: {:?}", &e);
-    //             anyhow::bail!(e);
-    //         }
-    //     };
+    async fn describe_container(&self, container_id: Id) -> anyhow::Result<cri::ContainerStatus> {
+        debug!("Describing container {}.", &container_id);
+        let request = tonic::Request::new(cri::ContainerStatusRequest {
+            container_id,
+            verbose: false,
+        });
+        debug!("Sending request: {:?}", &request);
+        let mut client = match self.shared.client().await {
+            Ok(client) => client,
+            Err(e) => {
+                error!("Error creating client: {:?}", &e);
+                anyhow::bail!(e);
+            }
+        };
+        let response = match client.container_status(request).await {
+            Ok(response) => response.into_inner(),
+            Err(e) => {
+                error!("Error making request: {:?}", &e);
+                anyhow::bail!(e);
+            }
+        };
+        debug!("{:?}", &response);
 
-    //     debug!("{:?}", &response);
-    //     info!("Found {} containerss.", response.containers.len());
-
-    //     let mut containers = self.containers.write().await;
-    //     *containers = std::collections::HashMap::new();
-    //     for container in response.containers {
-    //         if let Some(meta) = container.metadata.clone() {
-    //             containers.insert((container.pod_sandbox_id.clone(), meta.name), container);
-    //         }
-    //     }
-    //     Ok(())
-    // }
-
-    // async fn describe_container(&self, container_id: Id) -> anyhow::Result<cri::ContainerStatus> {
-    //     debug!("Describing container {}.", &container_id);
-    //     let request = tonic::Request::new(cri::ContainerStatusRequest {
-    //         container_id,
-    //         verbose: false,
-    //     });
-    //     debug!("Sending request: {:?}", &request);
-    //     let mut client = match self.client().await {
-    //         Ok(client) => client,
-    //         Err(e) => {
-    //             error!("Error creating client: {:?}", &e);
-    //             anyhow::bail!(e);
-    //         }
-    //     };
-    //     let response = match client.container_status(request).await {
-    //         Ok(response) => response.into_inner(),
-    //         Err(e) => {
-    //             error!("Error making request: {:?}", &e);
-    //             anyhow::bail!(e);
-    //         }
-    //     };
-    //     debug!("{:?}", &response);
-
-    //     if let Some(status) = response.status {
-    //         Ok(status)
-    //     } else {
-    //         bail!(
-    //             "Container status response contained no status: {:?}",
-    //             &response
-    //         );
-    //     }
-    // }
+        if let Some(status) = response.status {
+            Ok(status)
+        } else {
+            Err(anyhow::anyhow!(
+                "Container status response contained no status: {:?}",
+                &response
+            ))
+        }
+    }
 }
 
 const AMD64: &str = "amd64";
@@ -429,28 +417,6 @@ impl kubelet::provider::Provider for Provider {
     //     Ok(())
     // }
 
-    // async fn modify(&self, pod: kubelet::pod::Pod) -> anyhow::Result<()> {
-    //     info!(
-    //         "MODIFY called for pod {} in namespace {}",
-    //         pod.name(),
-    //         pod.namespace()
-    //     );
-    //     trace!("Modified pod spec: {:#?}", pod.as_kube_pod());
-    //     if let Some(timestamp) = pod.deletion_timestamp() {
-    //     } else {
-    //         Ok(())
-    //     }
-    // }
-
-    // async fn delete(&self, pod: kubelet::pod::Pod) -> anyhow::Result<()> {
-    //     info!(
-    //         "DELETE called for namespace {} pod {}",
-    //         pod.namespace(),
-    //         pod.name()
-    //     );
-    //     Ok(())
-    // }
-
     async fn logs(
         &self,
         namespace: String,
@@ -462,11 +428,11 @@ impl kubelet::provider::Provider for Provider {
             "LOGS called for namespace {} pod {} container {}.",
             &namespace, &pod, &container
         );
-        unimplemented!();
-        // let container_id = self.container_id(&namespace, &pod, &container).await?;
-        // let status = self.describe_container(container_id).await?;
-        // let handle = tokio::fs::File::open(status.log_path).await?;
-        // tokio::spawn(kubelet::log::stream(handle, sender));
+        let container_id = self.container_id(&namespace, &pod, &container).await?;
+        let status = self.describe_container(container_id).await?;
+        let handle = tokio::fs::File::open(status.log_path).await?;
+        tokio::spawn(kubelet::log::stream(handle, sender));
+        Ok(())
     }
 
     async fn exec(&self, pod: kubelet::pod::Pod, command: String) -> anyhow::Result<Vec<String>> {
