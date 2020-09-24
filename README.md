@@ -4,7 +4,7 @@ The goal of this project is to build a fully-featured Kubelet in Rust by leverag
 
 * Fully `async` Rust to maximize performance.
 * No `panics` and leverage Rust error handling for reliability.
-* Use [CNI](https://github.com/containernetworking/cni/blob/master/SPEC.md#network-configuration) and [CRI](https://kubernetes.io/blog/2016/12/container-runtime-interface-cri-in-kubernetes/) exclusively to simplify development while maximizing support for existing and future container runtimes and network providers.
+* Use [CNI](https://github.com/containernetworking/cni/blob/master/SPEC.md#network-configuration), [CSI](https://kubernetes.io/blog/2019/01/15/container-storage-interface-ga/), and [CRI](https://kubernetes.io/blog/2016/12/container-runtime-interface-cri-in-kubernetes/) exclusively to simplify development while maximizing support for existing and future container runtimes and network providers.
 
 # What Works
 * Node registration.
@@ -19,7 +19,7 @@ This example uses Kind to demonstrate KrustletCRI. KrustletCRI will run in a pri
 1. If you do not already have a Kind cluster running:
 
 ```
-kind cluster create
+kind create cluster
 ```
 
 2. Ensure that your `kubectl` is configured to use this Kind cluster by default, as it will be used for TLS Bootstrapping.

@@ -10,4 +10,4 @@ echo "Bootstrapping TLS"
 KUBECONFIG=/mnt/kube/config bootstrap-tls
 
 echo "Starting KrustletCRI"
-RUST_LOG=info krustlet-cri --hostname krustlet-cri --node-ip 172.17.0.1 --cert-file=/root/.krustlet/config/krustlet.crt --private-key-file=/root/.krustlet/config/krustlet.key --bootstrap-file=/root/.krustlet/config/bootstrap.conf
+krustlet-cri --hostname krustlet-cri --node-ip 172.17.0.1 --cert-file=/root/.krustlet/config/krustlet.crt --private-key-file=/root/.krustlet/config/krustlet.key --bootstrap-file=/root/.krustlet/config/bootstrap.conf
